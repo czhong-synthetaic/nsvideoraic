@@ -42,10 +42,13 @@ import numpy as np
 import pandas as pd
 import sklearn.neighbors as neighbors
 import torch
+from itertools import product
 from azure.storage.blob import ContainerClient
 from PIL import Image
+import PIL
 from pythaic.raic import latentspace
 from torch.utils.data import DataLoader, Dataset
+from torchvision.transforms import transforms
 from torchvision.transforms import functional as F
 from tqdm import tqdm
 
@@ -64,7 +67,7 @@ class NSFrame(Dataset):
         # self.training_df = pd.read_parquet(self.path)
         self.training_df = indf
         print('Training Samples', len(self.training_df))
-        self.training_df = self.trainign_df.head(10)
+        self.training_df = self.training_df.head(10)
         self.training_frames = self.training_df.frames.tolist()
         self.training_imgs = self.training_df.path.tolist()
         self.length = len(self.training_imgs)
@@ -96,7 +99,7 @@ class NSFrame(Dataset):
     
     def __getitem__(self, index): 
         img_file = self.training_imgs[index]
-        # img_file = '/data' + img_file
+        img_file = '/data' + img_file
         
         image = PIL.Image.open(img_file).convert("RGB")
 
@@ -176,23 +179,23 @@ class NSLatentVector(latentspace.LatentVectors):
 
     def create_xy_folders(self, imdfs):
         # Latents 
-        frame = imdfs.frame
-        x = imdfs.x1
-        y = imdfs.y1
-        all_cuid = self.dataname
         
+        frame = [ss['frame'] for ss in imdfs]
+        x = [ss['x1'] for ss in imdfs]
+        y = [ss['y1'] for ss in imdfs]
+        all_cuid = self.dataname
         # Create save dest directories
-        for cc, cf, cx in zip(all_cuid, frame, x):
+        for cf, cx in zip(frame, x):
             # NPY files 
-            x_dir = os.path.join(self.npy_save_dir, cc, 'high', str(cf), str(cx))
+            x_dir = os.path.join(self.npy_save_dir, all_cuid, 'high', str(cf), str(cx))
             if not os.path.exists(x_dir):
                 os.makedirs(x_dir, exist_ok=True)
                 
-            meta_dir = os.path.join(self.meta_save_dir, cc, 'high')
+            meta_dir = os.path.join(self.meta_save_dir, all_cuid, 'high')
             if not os.path.exists(meta_dir):
                 os.makedirs(meta_dir, exist_ok=True)
 
-        np_save_paths = [os.path.join(self.npy_save_dir, cc, 'high', str(cf), str(cx), f'{str(cy)}.npy') for (cc, cf, cx, cy) in zip(all_cuid, frame, x, y)]
+        np_save_paths = [os.path.join(self.npy_save_dir, all_cuid, 'high', str(cf), str(cx), f'{str(cy)}.npy') for (cf, cx, cy) in zip(frame, x, y)]
         
         return np_save_paths
 
@@ -242,12 +245,18 @@ class NSLatentVector(latentspace.LatentVectors):
             os.makedirs(parquet_output_dir, exist_ok=True)
             self.parquet_output_dir = parquet_output_dir
         
-        self.dset = self.dsetclass(indf=indf)
+
+        txf = transforms.Compose([
+            transforms.ToTensor(),
+        ])
+
+        self.dset = self.dsetclass(indf=indf, transform=txf)
         self.dload = DataLoader(self.dset, batch_size=num_images_per_batch, shuffle=False, collate_fn=customcollate, num_workers=numWorkers, pin_memory=True, drop_last=False)
 
         with torch.no_grad():
             
             dimdf = []
+            alltmpdf = []
             if write_parquets:
                 out = []
                 for c,(dat, xfm) in enumerate(tqdm(self.dload)):
@@ -277,20 +286,23 @@ class NSLatentVector(latentspace.LatentVectors):
                     tmp = output.cpu().detach().numpy()
 
                     npy_files = self.create_xy_folders(xfm)
-                    xfm['npypath'] = npy_files
+                    for ss, npy in zip(xfm, npy_files):
+                        ss['npypath'] = npy
+                    # xfm['npypath'] = npy_files
                     
                     latarray.append(tmp)
                     dimdf.append(xfm)
-                    
+                    tmpdf = pd.DataFrame(xfm)
+                    alltmpdf.append(tmpdf)    
 
-                dimdf = pd.concat(dimdf)
+                self.dimdf = pd.concat(alltmpdf).reset_index(drop=True)
 
                 # Used for later writing npy files
                 self.latvecs = np.concatenate(latarray)
                 
                 # Split by frames
                 # used for later writing metadata files.
-                self.dimdf = dimdf.reset_index(drop=True)
+                # self.dimdf = dimdf.reset_index(drop=True)
 
         try:
             torch.cuda.empty_cache()
@@ -307,7 +319,7 @@ class NSLatentVector(latentspace.LatentVectors):
 class NSDataPreprocessing():
     def __init__(self
                  , training_df:pd.DataFrame
-                 , dataname:str ='af3c9242-b676-499a-8910-65addbddb8da' # GUID
+                 , dataname:str ='17bbd414-4132-464a-bc1e-ab5dd66c7e8f' # GUID
                  , datasourcename:str = None
                  , dataquality='high' # Quality H,M,L
                  , dataframe='frames' # Frames
@@ -365,9 +377,10 @@ class NSDataPreprocessing():
         '''
         # df = self.raic.dimdf.assign(path = lambda x: x.path.str.replace(DATA_DIRECTORY, os.path.join(DATA_DIRECTORY,'latents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True))
         df = self.raic.dimdf
+        print(df)
         print(f'Example file: {df.path.iloc[0]}')
         
-        df.npypath.apply(lambda x: os.npypath.dirname(x)).drop_duplicates().apply(lambda x: os.makedirs(x,exist_ok=True))
+        df.npypath.apply(lambda x: os.path.dirname(x)).drop_duplicates().apply(lambda x: os.makedirs(x,exist_ok=True))
         
         with ThreadPoolExecutor(max_workers=os.cpu_count()*2) as exe:
             exe.map(lambda x: np.save(df.npypath.iloc[x], self.raic.latvecs[x].squeeze()), range(len(df)))
@@ -384,7 +397,7 @@ class NSDataPreprocessing():
         need localpath,blobpath,locallatentpath,bloblatentpath,localautotrainlatent,blobautotrainlatent,locallatent,bloblatent
         '''
         # try:
-        #     dimdf = self.dimdf
+        self.dimdf = self.raic.dimdf
         # except:
         #     raise ValueError('Finalizing Dim tables requires that ball-trees were calculated. Future work will resolve this issue.')
         
