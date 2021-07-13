@@ -96,7 +96,7 @@ class NSFrame(Dataset):
     
     def __getitem__(self, index): 
         img_file = self.training_imgs[index]
-        img_file = '/data' + img_file
+        # img_file = '/data' + img_file
         
         image = PIL.Image.open(img_file).convert("RGB")
 
@@ -242,7 +242,7 @@ class NSLatentVector(latentspace.LatentVectors):
             os.makedirs(parquet_output_dir, exist_ok=True)
             self.parquet_output_dir = parquet_output_dir
         
-        self.dset = self.dsetclass(path=indf)
+        self.dset = self.dsetclass(indf=indf)
         self.dload = DataLoader(self.dset, batch_size=num_images_per_batch, shuffle=False, collate_fn=customcollate, num_workers=numWorkers, pin_memory=True, drop_last=False)
 
         with torch.no_grad():
@@ -306,7 +306,7 @@ class NSLatentVector(latentspace.LatentVectors):
 # Create this First 
 class NSDataPreprocessing():
     def __init__(self
-                 , training_file:str
+                 , training_df:pd.DataFrame
                  , dataname:str ='af3c9242-b676-499a-8910-65addbddb8da' # GUID
                  , datasourcename:str = None
                  , dataquality='high' # Quality H,M,L
@@ -330,7 +330,7 @@ class NSDataPreprocessing():
         self.dataquality = dataquality
         self.dataframe = dataframe
         
-        self.training_file = training_file
+        self.training_df = training_df
 
         self.img_datapath = os.path.join(DATA_DIRECTORY,self.dataname,self.dataquality)
         # self.datapath = os.path.join(DATA_DIRECTORY,self.dataname,self.dataquality,self.dataframe)
@@ -354,9 +354,9 @@ class NSDataPreprocessing():
         
         if num_images_per_batch is not None:
             # Let the input be the path to the parquet ifle.
-            self.raic.get_vectors(self.training_file, num_images_per_batch=num_images_per_batch, pathcolumnname='input')
+            self.raic.get_vectors(self.training_df, num_images_per_batch=num_images_per_batch, pathcolumnname='input')
         else:
-            self.raic.get_vectors(self.training_file, pathcolumnname='input')
+            self.raic.get_vectors(self.training_df, pathcolumnname='input')
 
     
     def write_latent_vector_arrays(self, valid_image_extensions=['jpeg','jpg','png']) -> None:
@@ -407,3 +407,10 @@ class NSDataPreprocessing():
             df['blobimage'] = df.blobpath
             
             df.to_parquet(frameparquet)        
+
+
+if __name__ == "__main__":
+    training_file = "/home/azureuser/data/onlyaf3c.parquet"
+    training_df = pd.read_parquet(training_file)
+
+    ns = NSDataPreprocessing(training_df)
