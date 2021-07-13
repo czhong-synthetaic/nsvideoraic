@@ -287,9 +287,11 @@ class NSLatentVector(latentspace.LatentVectors):
 
                 # Used for later writing npy files
                 self.latvecs = np.concatenate(latarray)
+                
+                # Split by frames
                 # used for later writing metadata files.
                 self.dimdf = dimdf.reset_index(drop=True)
-        
+
         try:
             torch.cuda.empty_cache()
         except:
@@ -330,8 +332,10 @@ class NSDataPreprocessing():
         
         self.training_file = training_file
 
-        self.datapath = os.path.join(DATA_DIRECTORY,self.dataname,self.dataquality,self.dataframe)
-        
+        self.img_datapath = os.path.join(DATA_DIRECTORY,self.dataname,self.dataquality)
+        # self.datapath = os.path.join(DATA_DIRECTORY,self.dataname,self.dataquality,self.dataframe)
+        self.meta_save_dir = os.path.join(DATA_DIRECTORY, 'metatables')
+        self.npy_save_dir = os.path.join(DATA_DIRECTORY, 'latents')
  
         self.default_dataset_class = default_dataset
         self.default_dataloader_class = DataLoader # currently no way to change this
@@ -375,25 +379,31 @@ class NSDataPreprocessing():
         self._datamovementcommands['pull_from_azure'].append(f'azcopy cp --recursive=true "{AZURE_STORAGE_ACCOUNT}/latents/{self.dataname}/{self.dataquality}/{self.dataframe}/*{SAS_KEY}" "{DATA_DIRECTORY}/latents/{self.dataname}/{self.dataquality}/{self.dataframe}/"')
     
     
-    # def finalize_save_dim_tables(self, valid_image_extensions=['jpeg','jpg','png']):
-    #     '''
-    #     need localpath,blobpath,locallatentpath,bloblatentpath,localautotrainlatent,blobautotrainlatent,locallatent,bloblatent
-    #     '''
-    #     try:
-    #         dimdf = self.dimtables_dict
-    #     except:
-    #         raise ValueError('Finalizing Dim tables requires that ball-trees were calculated. Future work will resolve this issue.')
+    def finalize_save_meta_tables(self, valid_image_extensions=['jpeg','jpg','png']):
+        '''
+        need localpath,blobpath,locallatentpath,bloblatentpath,localautotrainlatent,blobautotrainlatent,locallatent,bloblatent
+        '''
+        # try:
+        #     dimdf = self.dimdf
+        # except:
+        #     raise ValueError('Finalizing Dim tables requires that ball-trees were calculated. Future work will resolve this issue.')
         
-    #     for k,item in dimdf[self.dataname][self.dataframe].items():
-    #         df = pd.read_parquet(item)
-    #         df = df.rename(columns={'path':'localpath'})
-    #         df['blobpath'] = df.localpath.str.replace(DATA_DIRECTORY,AZURE_STORAGE_ACCOUNT)
-    #         df['locallatentpath'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(DATA_DIRECTORY,'latents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
-    #         df['bloblatentpath'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(AZURE_STORAGE_ACCOUNT,'latents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
-    #         df['localautotrainlatent'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(DATA_DIRECTORY,'autotrainlatents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
-    #         df['blobautotrainlatent'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(AZURE_STORAGE_ACCOUNT,'autotrainlatents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
-    #         df['locallatent'] = df.locallatentpath
-    #         df['bloblatent'] = df.bloblatentpath
-    #         df['blobimage'] = df.blobpath
+        # Finalize meta table by taking the batched (can contain multiple frames) and saving by frames.
+        meta_dir = os.path.join(self.meta_save_dir, self.dataname, self.dataquality)
+
+        self.uniqueframes = self.dimdf.frame.unique()
+        for fr in self.uniqueframes:
+            aframedf = self.dimdf[self.dimdf['frame'] == fr]
+            frameparquet = os.path.join(meta_dir, f'{str(fr)}.parquet')
+            df = aframedf
+            df = df.rename(columns={'path':'localpath'})
+            df['blobpath'] = df.localpath.str.replace(DATA_DIRECTORY,AZURE_STORAGE_ACCOUNT)
+            df['locallatentpath'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(DATA_DIRECTORY,'latents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
+            df['bloblatentpath'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(AZURE_STORAGE_ACCOUNT,'latents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
+            df['localautotrainlatent'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(DATA_DIRECTORY,'autotrainlatents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
+            df['blobautotrainlatent'] = df.localpath.str.replace(DATA_DIRECTORY, os.path.join(AZURE_STORAGE_ACCOUNT,'autotrainlatents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True)
+            df['locallatent'] = df.locallatentpath
+            df['bloblatent'] = df.bloblatentpath
+            df['blobimage'] = df.blobpath
             
-    #         df.to_parquet(item)        
+            df.to_parquet(frameparquet)        
