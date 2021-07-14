@@ -67,14 +67,36 @@ class NSFrame(Dataset):
         # self.training_df = pd.read_parquet(self.path)
         self.training_df = indf
         print('Training Samples', len(self.training_df))
-        self.training_df = self.training_df.head(10)
+        self.training_df = indf.sort_values("path")
+        self.training_df = self.training_df.head(30)
+        print(self.training_df.head())
+        
         self.training_frames = self.training_df.frames.tolist()
         self.training_imgs = self.training_df.path.tolist()
+
         self.length = len(self.training_imgs)
 
         
         self.overlap = overlap
         self.transform = transform
+
+        # Get Images per batch
+        img_file = self.training_imgs[0]
+        img_file = '/data' + img_file
+        
+        image = PIL.Image.open(img_file).convert("RGB")
+
+        wx, hy = image.size
+        
+        perm = product(
+            np.arange(0, wx, self.overlap).astype(int),
+            np.arange(0, hy, self.overlap).astype(int))
+        
+        self.tiles_per_frame = 0
+
+        for idx, (x, y) in enumerate(perm):
+            self.tiles_per_frame += 1
+
 
     def __len__(self):
         return self.length
@@ -126,6 +148,12 @@ class NSFrame(Dataset):
         return imgs, imdf
 
     
+def sorted_nicely(self, l ): 
+    """ Sort the given iterable in the way that humans expect.""" 
+    convert = lambda text: int(text) if text.isdigit() else text 
+    alphanum_key = lambda key: [ convert(c) for c in re.split('([0-9]+)', key) ] 
+    return sorted(l, key = alphanum_key)
+
 def customcollate(batch):
     '''
     batch: the batch of data used in pytorch data loader class.
@@ -179,15 +207,15 @@ class NSLatentVector(latentspace.LatentVectors):
 
     def create_xy_folders(self, imdfs):
         # Latents 
-        
-        frame = [ss['frame'] for ss in imdfs]
+        # print(imdfs[0])
+        frame = [int(ss['frame']) for ss in imdfs]
         x = [ss['x1'] for ss in imdfs]
         y = [ss['y1'] for ss in imdfs]
         all_cuid = self.dataname
         # Create save dest directories
         for cf, cx in zip(frame, x):
             # NPY files 
-            x_dir = os.path.join(self.npy_save_dir, all_cuid, 'high', str(cf), str(cx))
+            x_dir = os.path.join(self.npy_save_dir, all_cuid, 'high')
             if not os.path.exists(x_dir):
                 os.makedirs(x_dir, exist_ok=True)
                 
@@ -195,7 +223,7 @@ class NSLatentVector(latentspace.LatentVectors):
             if not os.path.exists(meta_dir):
                 os.makedirs(meta_dir, exist_ok=True)
 
-        np_save_paths = [os.path.join(self.npy_save_dir, all_cuid, 'high', str(cf), str(cx), f'{str(cy)}.npy') for (cf, cx, cy) in zip(frame, x, y)]
+        np_save_paths = [os.path.join(self.npy_save_dir, all_cuid, 'high', f'frame_{cf}.npy') for cf in (frame)]
         
         return np_save_paths
 
@@ -204,9 +232,9 @@ class NSLatentVector(latentspace.LatentVectors):
                     , numWorkers=os.cpu_count()
                     , pathcolumnname = "path"
                     , num_images_per_batch=4
-                    , write_parquets = False
+                    , write_parquets = True
                     , parquet_write_interval=100
-                    , parquet_output_dir = None) -> None:
+                    , parquet_output_dir = './output') -> None:
         '''
         Calculate RAIC vectors.
         
@@ -258,14 +286,25 @@ class NSLatentVector(latentspace.LatentVectors):
             dimdf = []
             alltmpdf = []
             if write_parquets:
+                # Will write parqutes in frame-batches, then will need to save them by frame npy files. versus the frame_0/x_0/y_0.npy format
                 out = []
                 for c,(dat, xfm) in enumerate(tqdm(self.dload)):
                     N = len(xfm)
                     dat = dat.to(self.device)
                     output = self.model(dat)
                     tmp = output.cpu().detach().numpy()
+
+                    npy_files = self.create_xy_folders(xfm)
+                    for ss, npy in zip(xfm, npy_files):
+                        ss['npypath'] = npy
+
+                    # latarray.append(tmp)
                     dimdf.append(xfm)
-                    out.append(pd.concat([xfm, pd.DataFrame({'V':[tmp[k,:] for k in range(N)]})],axis=1,sort=False))
+                    tmpdf = pd.DataFrame(xfm)
+                    alltmpdf.append(pd.concat([tmpdf, pd.DataFrame({'V':[tmp[k,:] for k in range(N)]})],axis=1,sort=False))    
+
+
+                    out.append(pd.concat([tmpdf, pd.DataFrame({'V':[tmp[k,:] for k in range(N)]})],axis=1,sort=False))
                     
                     if (((c+1)%parquet_write_interval) == 0):
                         out = pd.concat(out).reset_index(drop=True)
@@ -275,19 +314,24 @@ class NSLatentVector(latentspace.LatentVectors):
                 if (((c+1)%parquet_write_interval)!=0):
                     out = pd.concat(out).reset_index(drop=True)
                     out.to_parquet(f'{self.parquet_output_dir}/batch_{str(c).zfill(9)}.parquet')
+                self.dimdf = pd.concat(alltmpdf).reset_index(drop=True)
+
             else:
                 latarray = []
-                
+                latdictionary = {}
+
                 for c,(dat, xfm) in enumerate(tqdm(self.dload)):
                     # Batch with (images * subtiles_per_image) size
                     N = len(xfm)
                     dat = dat.to(self.device)
-                    output = self.model(dat)                    
+                    output = self.model(dat)
+
                     tmp = output.cpu().detach().numpy()
 
                     npy_files = self.create_xy_folders(xfm)
                     for ss, npy in zip(xfm, npy_files):
                         ss['npypath'] = npy
+
                     # xfm['npypath'] = npy_files
                     
                     latarray.append(tmp)
@@ -364,20 +408,48 @@ class NSDataPreprocessing():
         
         self.raic = NSLatentVector(self.dataname, self.dataquality, remove_relu=remove_ReLu, bit_model_name = bit_m_model, custommodel = custom_model)
         
-        if num_images_per_batch is not None:
             # Let the input be the path to the parquet ifle.
-            self.raic.get_vectors(self.training_df, num_images_per_batch=num_images_per_batch, pathcolumnname='input')
-        else:
-            self.raic.get_vectors(self.training_df, pathcolumnname='input')
 
-    
+        self.raic.get_vectors(self.training_df, pathcolumnname='input')
+
+
+    def write_df_chunk_npy(self, df):
+        vectors = np.array(df.V.tolist())
+        npy_path = df.npypath.values[0]
+        frame = df.frame.values[0]
+
+        with open(npy_path, 'wb') as npp:
+            np.save(npp, vectors)
+
+        updateddf = df.drop(columns=['V'])
+        updateddf.to_parquet(os.path.join(self.meta_save_dir, self.dataname, 'high', f'frame_{frame}.parquet'))
+
+        return 1
+
+    def write_frame_latent_vector_arrays(self, valid_image_extensions=['jpeg','jpg','png']) -> None:
+        df = self.raic.dimdf
+
+        # df.npypath.apply(lambda x: os.path.dirname(x)).drop_duplicates().apply(lambda x: os.makedirs(x,exist_ok=True))
+
+        print(f'Example file: {df.npypath.iloc[0]}')
+
+        unique_frames = df.frame.unique()
+
+        ret = [self.write_df_chunk_npy(df[df['frame'] == ss]) for ss in unique_frames]
+        # for s in unique_frames:
+            # ss = df[df['frame'] == s]
+            
+
+        with ThreadPoolExecutor(max_workers=os.cpu_count()*2) as exe:
+            exe.map(self.write_df_chunk_npy, df.groupby('frame'))
+            
+
     def write_latent_vector_arrays(self, valid_image_extensions=['jpeg','jpg','png']) -> None:
         '''
         Saved vectors must have the shape (2048,); i.e., (dim,)
         '''
         # df = self.raic.dimdf.assign(path = lambda x: x.path.str.replace(DATA_DIRECTORY, os.path.join(DATA_DIRECTORY,'latents')).str.replace('|'.join(valid_image_extensions),'npy',regex=True))
         df = self.raic.dimdf
-        print(df)
         print(f'Example file: {df.path.iloc[0]}')
         
         df.npypath.apply(lambda x: os.path.dirname(x)).drop_duplicates().apply(lambda x: os.makedirs(x,exist_ok=True))
@@ -419,8 +491,25 @@ class NSDataPreprocessing():
             df['bloblatent'] = df.bloblatentpath
             df['blobimage'] = df.blobpath
             
-            df.to_parquet(frameparquet)        
+            df.to_parquet(frameparquet)     
 
+        self._datamovementcommands['push_to_azure'].append(f'azcopy cp --recursive=true "{DATA_DIRECTORY}/metatable/{self.dataname}/{self.dataquality}/{self.dataframe}/*" "{AZURE_STORAGE_ACCOUNT}/metatable/{self.dataname}/{self.dataquality}/{self.dataframe}/{SAS_KEY}"')
+        self._datamovementcommands['pull_from_azure'].append(f'azcopy cp --recursive=true "{AZURE_STORAGE_ACCOUNT}/metatable/{self.dataname}/{self.dataquality}/{self.dataframe}/*{SAS_KEY}" "{DATA_DIRECTORY}/metatable/{self.dataname}/{self.dataquality}/{self.dataframe}/"')
+       
+
+    def transfer_raic_data_to_geospatial_container(self,transfer_data=False) -> None:
+        if not transfer_data:
+            print('\nTo transfer data, set `transfer_data=True`.\n')
+            print('IMPORTANT: if transfer_data=True, The following commands will be run using `os.system()` in\n\torder to transfer data to azure blob storage:')
+            print('\n\n'.join(self._datamovementcommands['push_to_azure']))
+            print('\n\nUse the following to pull the resulting data FROM azure (to the production VM):')
+            print('\n\n'.join(self._datamovementcommands['pull_from_azure']))
+            return None
+        else:
+            print('IMPORTANT: Running the following commands using `os.system()`:')
+            print('\n\n'.join(self._datamovementcommands['push_to_azure']))
+            return [os.system(k) for k in self._datamovementcommands['push_to_azure']]
+            
 
 if __name__ == "__main__":
     training_file = "/home/azureuser/data/onlyaf3c.parquet"
